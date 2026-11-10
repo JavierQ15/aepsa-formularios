@@ -81,8 +81,11 @@
   "use strict";
   const tg = window.Telegram?.WebApp;
   const params = new URLSearchParams(location.search);
-  const id = params.get("c") ?? "";
-  const api = params.get("api") ?? "";
+  // Abierto desde el grupo (enlace directo t.me/<bot>?startapp=<cuestionario>__<subdominio del túnel>) o desde el
+  // botón del chat privado (?c=<cuestionario>&api=<url>).
+  const arranque = /^([a-z0-9-]{1,64})__([a-z0-9-]{1,63})$/.exec(tg?.initDataUnsafe?.start_param ?? "");
+  const id = arranque ? arranque[1] : (params.get("c") ?? "");
+  const api = arranque ? "https://" + arranque[2] + ".trycloudflare.com" : (params.get("api") ?? "");
   const $ = (s) => document.getElementById(s);
   const POLL_MS = 4000;
   const GUARDAR_MS = 700;
