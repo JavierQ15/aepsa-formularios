@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Cuestionario</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<!--
+  Mini App de cuestionarios (fuente: elocal-v2/scripts/telegram/formulario/index.html). Página vacía: las preguntas y
+  el borrador compartido se piden a la API indicada en ?api=, con el initData firmado por Telegram. No guarda nada.
+-->
+<style>
+  :root {
+    --fondo: var(--tg-theme-secondary-bg-color, #f1f2f5);
+    --tarjeta: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #ffffff));
+    --texto: var(--tg-theme-text-color, #1b1d22);
+    --suave: var(--tg-theme-hint-color, #6b7280);
+    --acento: var(--tg-theme-button-color, #2481cc);
+    --acento-texto: var(--tg-theme-button-text-color, #ffffff);
+    --enlace: var(--tg-theme-link-color, #2481cc);
+    --borde: color-mix(in srgb, var(--suave) 28%, transparent);
+    --ok: #2e9e5b;
+    --aviso: #c77700;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--fondo); color: var(--texto);
+    font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 16px 16px 96px; }
+  header h1 { font-size: 1.25rem; margin: 4px 0 6px; }
+  header p { margin: 0 0 10px; color: var(--suave); font-size: .95rem; }
+  .barra { position: sticky; top: 0; z-index: 2; background: var(--fondo); padding: 8px 0 10px; display: flex;
+    gap: 10px; align-items: center; font-size: .9rem; color: var(--suave); }
+  .progreso { flex: 1; height: 6px; border-radius: 3px; background: var(--borde); overflow: hidden; }
+  .progreso > i { display: block; height: 100%; width: 0; background: var(--acento); transition: width .3s; }
+  .tarjeta { background: var(--tarjeta); border-radius: 14px; padding: 14px 14px 12px; margin: 12px 0;
+    border: 1px solid var(--borde); }
+  .tarjeta.hecha { border-color: color-mix(in srgb, var(--ok) 55%, transparent); }
+  .tarjeta.faltante { border-color: var(--aviso); }
+  .cab { display: flex; justify-content: space-between; gap: 8px; font-size: .8rem; color: var(--suave); }
+  .cab b { color: var(--texto); font-weight: 600; }
+  .contexto { color: var(--suave); font-size: .9rem; margin: 6px 0 4px; }
+  .pregunta { white-space: pre-line; margin: 4px 0 10px; font-weight: 500; }
+  label.opcion { display: flex; gap: 10px; align-items: flex-start; padding: 9px 10px; border-radius: 10px;
+    border: 1px solid var(--borde); margin: 6px 0; cursor: pointer; }
+  label.opcion input { margin-top: 3px; accent-color: var(--acento); }
+  label.opcion:has(input:checked) { border-color: var(--acento); background: color-mix(in srgb, var(--acento) 9%, transparent); }
+  textarea { width: 100%; min-height: 64px; resize: vertical; margin-top: 6px; padding: 9px 10px; border-radius: 10px;
+    border: 1px solid var(--borde); background: transparent; color: var(--texto); font: inherit; }
+  textarea:focus, label.opcion:focus-within { outline: 2px solid color-mix(in srgb, var(--acento) 60%, transparent); outline-offset: 1px; }
+  .pie { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: .8rem; color: var(--suave); min-height: 1.2em; }
+  .borrar { background: none; border: 0; color: var(--enlace); font: inherit; font-size: .8rem; cursor: pointer; padding: 0; }
+  .aviso { padding: 12px 14px; border-radius: 12px; background: var(--tarjeta); border: 1px solid var(--borde); margin: 12px 0; }
+  .aviso.error { border-color: #d14343; }
+  .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--texto); color: var(--fondo);
+    padding: 8px 14px; border-radius: 18px; font-size: .85rem; opacity: 0; transition: opacity .25s; pointer-events: none; max-width: 90vw; }
+  .toast.ver { opacity: .92; }
+  #enviarWeb { display: none; width: 100%; padding: 13px; border: 0; border-radius: 12px; background: var(--acento);
+    color: var(--acento-texto); font: inherit; font-weight: 600; margin-top: 8px; }
+  #enviarWeb:disabled { opacity: .5; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="titulo">Cargando…</h1>
+    <p id="intro"></p>
+  </header>
+  <div class="barra" id="barra" hidden>
+    <div class="progreso"><i id="progreso"></i></div>
+    <span id="contador"></span>
+    <span id="guardado" aria-live="polite"></span>
+  </div>
+  <div id="mensaje"></div>
+  <form id="formulario" autocomplete="off" onsubmit="return false"></form>
+  <button id="enviarWeb" type="button">Enviar respuestas</button>
+</main>
+<div class="toast" id="toast" role="status"></div>
+<script>
+(() => {
+  "use strict";
+  const tg = window.Telegram?.WebApp;
+  const params = new URLSearchParams(location.search);
+  const id = params.get("c") ?? "";
+  const api = params.get("api") ?? "";
+  const $ = (s) => document.getElementById(s);
+  const POLL_MS = 4000;
+  const GUARDAR_MS = 700;
+
+  let datos = null;          // última vista del servidor
+  const locales = new Map(); // pregunta → {opcion, texto} pendiente de guardar
+  const temporizadores = new Map();
+  let enviando = false;
+
+  function aviso(texto, error = false) {
+    const div = $("mensaje");
+    div.replaceChildren();
+    if (!texto) return;
+    const p = document.createElement("div");
+    p.className = "aviso" + (error ? " error" : "");
+    p.textContent = texto;
+    div.append(p);
+  }
+  let tToast;
+  function toast(texto) {
+    const t = $("toast");
+    t.textContent = texto;
+    t.classList.add("ver");
+    clearTimeout(tToast);
+    tToast = setTimeout(() => t.classList.remove("ver"), 2600);
+  }
+  const hora = (iso) => (iso ? new Date(iso).toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "");
+  const completa = (r) => Boolean(r && (r.opcion || (r.texto ?? "").trim()));
+
+  async function llamar(metodo, ruta, cuerpo) {
+    const r = await fetch(api + ruta, {
+      method: metodo,
+      headers: { authorization: "tma " + tg.initData, ...(cuerpo ? { "content-type": "application/json" } : {}) },
+      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+    });
+    const json = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      const e = new Error(json.error || "error-" + r.status);
+      e.estado = r.status;
+      e.datos = json;
+      throw e;
+    }
+    return json;
+  }
+
+  const MENSAJES = {
+    "no-autenticado": "No se ha podido comprobar tu identidad. Cierra y vuelve a abrir el formulario desde Telegram.",
+    "no-autorizado": "Este formulario es solo para los miembros del grupo del proyecto.",
+    "cuestionario-desconocido": "Este cuestionario ya no existe.",
+    "ya-enviado": "Este cuestionario ya se envió.",
+  };
+  const mensajeError = (e) =>
+    MENSAJES[e.message] ?? (e.estado ? "Error del servidor (" + e.message + ")." : "Sin conexión con el servidor. Vuelve a intentarlo en un momento.");
+
+  function respuestaDe(pid) {
+    return locales.get(pid) ?? datos.borrador[pid] ?? null;
+  }
+
+  function pintar() {
+    const form = $("formulario");
+    const cerrado = datos.estado === "completado";
+    document.title = datos.titulo;
+    $("titulo").textContent = datos.titulo;
+    $("intro").textContent = datos.introduccion ?? "";
+    $("barra").hidden = false;
+    if (cerrado) aviso("✅ Enviado" + (datos.enviadoPor ? " por " + datos.enviadoPor : "") + (datos.enviado ? " el " + hora(datos.enviado) : "") + ". Las respuestas ya no se pueden cambiar.");
+    if (!form.dataset.montado) {
+      for (const [n, p] of datos.preguntas.entries()) form.append(tarjeta(p, n + 1, datos.preguntas.length));
+      form.dataset.montado = "1";
+    }
+    for (const p of datos.preguntas) actualizarTarjeta(p, cerrado);
+    actualizarProgreso();
+  }
+
+  function tarjeta(p, n, total) {
+    const art = document.createElement("section");
+    art.className = "tarjeta";
+    art.id = "p-" + p.id;
+    const cab = document.createElement("div");
+    cab.className = "cab";
+    const num = document.createElement("span");
+    num.textContent = n + "/" + total + " · ";
+    const ident = document.createElement("b");
+    ident.textContent = p.id;
+    num.append(ident);
+    const estadoP = document.createElement("span");
+    estadoP.className = "estado";
+    cab.append(num, estadoP);
+    art.append(cab);
+    if (p.contexto) {
+      const c = document.createElement("div");
+      c.className = "contexto";
+      c.textContent = p.contexto;
+      art.append(c);
+    }
+    const q = document.createElement("div");
+    q.className = "pregunta";
+    q.textContent = p.texto;
+    art.append(q);
+    for (const [i, o] of p.opciones.entries()) {
+      const l = document.createElement("label");
+      l.className = "opcion";
+      const r = document.createElement("input");
+      r.type = "radio";
+      r.name = "o-" + p.id;
+      r.value = String(i + 1);
+      r.addEventListener("change", () => cambiar(p.id));
+      const t = document.createElement("span");
+      t.textContent = o;
+      l.append(r, t);
+      art.append(l);
+    }
+    const ta = document.createElement("textarea");
+    ta.name = "t-" + p.id;
+    ta.maxLength = 2000;
+    ta.placeholder = p.opciones.length ? "Matiz o respuesta propia (opcional si eliges una opción)" : "Escribe tu respuesta";
+    ta.setAttribute("aria-label", "Respuesta escrita a " + p.id);
+    ta.addEventListener("input", () => cambiar(p.id));
+    art.append(ta);
+    const pie = document.createElement("div");
+    pie.className = "pie";
+    const quien = document.createElement("span");
+    quien.className = "quien";
+    const borrar = document.createElement("button");
+    borrar.type = "button";
+    borrar.className = "borrar";
+    borrar.textContent = "Borrar respuesta";
+    borrar.addEventListener("click", () => {
+      art.querySelectorAll("input[type=radio]").forEach((x) => (x.checked = false));
+      ta.value = "";
+      cambiar(p.id);
+    });
+    pie.append(quien, borrar);
+    art.append(pie);
+    return art;
+  }
+
+  function leerTarjeta(pid) {
+    const art = $("p-" + pid);
+    const marcada = art.querySelector("input[type=radio]:checked");
+    return { opcion: marcada ? Number(marcada.value) : null, texto: art.querySelector("textarea").value };
+  }
+
+  function actualizarTarjeta(p, cerrado) {
+    const art = $("p-" + p.id);
+    const editando = locales.has(p.id) || art.contains(document.activeElement);
+    const r = datos.borrador[p.id];
+    if (!editando) {
+      art.querySelectorAll("input[type=radio]").forEach((x) => (x.checked = Number(x.value) === (r?.opcion ?? 0)));
+      art.querySelector("textarea").value = r?.texto ?? "";
+    }
+    art.querySelectorAll("input, textarea, button").forEach((x) => (x.disabled = cerrado));
+    const hecha = completa(respuestaDe(p.id));
+    art.classList.toggle("hecha", hecha);
+    art.querySelector(".estado").textContent = hecha ? "✓ respondida" : "pendiente";
+    art.querySelector(".quien").textContent = r ? "Última edición: " + r.autor + ", " + hora(r.fecha) : "";
+    art.querySelector(".borrar").hidden = cerrado || !hecha;
+  }
+
+  function actualizarProgreso() {
+    const total = datos.preguntas.length;
+    const hechas = datos.preguntas.filter((p) => completa(respuestaDe(p.id))).length;
+    $("progreso").style.width = (100 * hechas) / total + "%";
+    $("contador").textContent = hechas + "/" + total;
+    const cerrado = datos.estado === "completado";
+    const listo = hechas === total && !cerrado && !enviando;
+    const texto = cerrado ? "Enviado" : listo ? "Enviar respuestas" : "Faltan " + (total - hechas) + " por responder";
+    if (tg?.MainButton && tg.initData) {
+      tg.MainButton.setParams({ text: texto, is_visible: !cerrado, is_active: listo });
+      if (listo) tg.MainButton.enable(); else tg.MainButton.disable();
+    } else {
+      const b = $("enviarWeb");
+      b.style.display = cerrado ? "none" : "block";
+      b.textContent = texto;
+      b.disabled = !listo;
+    }
+  }
+
+  function cambiar(pid) {
+    locales.set(pid, leerTarjeta(pid));
+    $("guardado").textContent = "Guardando…";
+    $("p-" + pid).classList.remove("faltante");
+    actualizarTarjeta(datos.preguntas.find((p) => p.id === pid), false);
+    actualizarProgreso();
+    clearTimeout(temporizadores.get(pid));
+    temporizadores.set(pid, setTimeout(() => guardar(pid), GUARDAR_MS));
+  }
+
+  async function guardar(pid) {
+    const valor = locales.get(pid);
+    if (!valor) return;
+    try {
+      const nueva = await llamar("PUT", "/api/c/" + encodeURIComponent(id) + "/r/" + encodeURIComponent(pid), valor);
+      if (locales.get(pid) === valor) locales.delete(pid);
+      datos = nueva;
+      $("guardado").textContent = locales.size ? "Guardando…" : "Guardado ✓";
+      pintar();
+    } catch (e) {
+      if (e.message === "ya-enviado" && e.datos?.id) {
+        locales.clear();
+        datos = e.datos;
+        pintar();
+        return;
+      }
+      $("guardado").textContent = "Sin guardar";
+      toast(mensajeError(e));
+      temporizadores.set(pid, setTimeout(() => guardar(pid), 5000));
+    }
+  }
+
+  async function refrescar() {
+    if (enviando) return;
+    try {
+      const nueva = await llamar("GET", "/api/c/" + encodeURIComponent(id));
+      const antes = datos;
+      datos = nueva;
+      if (antes && nueva.version !== antes.version) {
+        const cambiadas = nueva.preguntas.filter((p) => JSON.stringify(nueva.borrador[p.id] ?? null) !== JSON.stringify(antes.borrador[p.id] ?? null));
+        const ajenas = cambiadas.filter((p) => nueva.borrador[p.id] && nueva.borrador[p.id].autor !== nueva.yo);
+        if (ajenas.length) toast(ajenas[0].id + " actualizada por " + nueva.borrador[ajenas[0].id].autor);
+      }
+      if ($("mensaje").firstChild?.classList.contains("error")) aviso("");
+      pintar();
+    } catch (e) {
+      if (!datos) aviso(mensajeError(e), true);
+      else toast(mensajeError(e));
+    }
+  }
+
+  async function enviar() {
+    if (enviando || datos.estado === "completado") return;
+    for (const pid of [...locales.keys()]) {
+      clearTimeout(temporizadores.get(pid));
+      await guardar(pid);
+    }
+    const confirmar = () =>
+      new Promise((ok) =>
+        tg?.showConfirm ? tg.showConfirm("¿Enviar todas las respuestas? Después ya no se podrán cambiar.", ok) : ok(window.confirm("¿Enviar todas las respuestas? Después ya no se podrán cambiar.")),
+      );
+    if (!(await confirmar())) return;
+    enviando = true;
+    tg?.MainButton?.showProgress?.();
+    try {
+      datos = await llamar("POST", "/api/c/" + encodeURIComponent(id) + "/enviar");
+      enviando = false;
+      tg?.MainButton?.hideProgress?.();
+      pintar();
+      tg?.HapticFeedback?.notificationOccurred?.("success");
+      toast("Respuestas enviadas. ¡Gracias!");
+      setTimeout(() => tg?.close?.(), 1800);
+    } catch (e) {
+      enviando = false;
+      tg?.MainButton?.hideProgress?.();
+      if (e.message === "incompleto") {
+        for (const pid of e.datos.faltan ?? []) $("p-" + pid)?.classList.add("faltante");
+        const primera = e.datos.faltan?.[0];
+        if (primera) $("p-" + primera).scrollIntoView({ behavior: "smooth", block: "center" });
+        toast("Faltan respuestas por completar");
+      } else toast(mensajeError(e));
+      await refrescar();
+    }
+  }
+
+  if (!tg?.initData) {
+    $("titulo").textContent = "Cuestionario";
+    aviso("Abre este formulario desde el botón «📝 Abrir formulario» del bot en Telegram.", true);
+    return;
+  }
+  if (!/^[a-z0-9-]{1,64}$/.test(id) || !/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(api)) {
+    $("titulo").textContent = "Cuestionario";
+    aviso("Enlace no válido. Vuelve a pedir el formulario al bot.", true);
+    return;
+  }
+  tg.ready();
+  tg.expand();
+  tg.MainButton.onClick(enviar);
+  $("enviarWeb").addEventListener("click", enviar);
+  refrescar();
+  setInterval(refrescar, POLL_MS);
+})();
+</script>
+</body>
+</html>
